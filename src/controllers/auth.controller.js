@@ -23,12 +23,18 @@ const register = async (req, res) => {
     }
 
     // ✅ create user (DO NOT hash here, model will hash automatically)
+    // const user = await User.create({
+    //   name,
+    //   email,
+    //   password, // ✅ plain password
+    //   role: role || "USER",
+    // });
     const user = await User.create({
-      name,
-      email,
-      password, // ✅ plain password
-      role: role || "USER",
-    });
+  name,
+  email,
+  password,
+  role: "USER",
+});
 
     // ✅ generate token
     const token = jwt.sign(
@@ -67,6 +73,7 @@ const login = async (req, res) => {
 
     // ✅ compare plain password with hashed password in DB
     const isMatch = await user.comparePassword(password); // ✅ uses model method
+   
     if (!isMatch) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -89,3 +96,6 @@ const login = async (req, res) => {
 };
 
 module.exports = { register, login };
+
+
+

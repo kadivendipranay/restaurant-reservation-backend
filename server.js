@@ -1,12 +1,17 @@
+//server.js
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const aiRoutes = require("./src/routes/ai.routes");
 
 const authRoutes = require("./src/routes/auth.routes");
 const reservationRoutes = require("./src/routes/reservation.routes");
 const authMiddleware = require("./src/middlewares/auth.middleware");
 const roleMiddleware = require("./src/middlewares/role.middleware");
+const insightsRoutes = require("./src/routes/insights.routes");
+
+
 
 // ✅ IMPORTANT: Update this path if your model file name is different
 const User = require("./src/models/User");
@@ -43,6 +48,8 @@ app.get("/api/admin-only", authMiddleware, roleMiddleware("ADMIN"), (req, res) =
 // ✅ routes
 app.use("/api/auth", authRoutes);
 app.use("/api/reservations", reservationRoutes);
+app.use("/api/ai", aiRoutes);
+app.use("/api/insights", insightsRoutes);
 
 // ✅ TEMP route: make a user ADMIN (remove after testing)
 app.put("/api/make-admin", async (req, res) => {
@@ -89,3 +96,5 @@ mongoose
   .catch((error) => {
     console.error("MongoDB connection error:", error.message);
   });
+
+  

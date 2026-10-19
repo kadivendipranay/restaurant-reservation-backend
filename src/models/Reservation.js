@@ -29,6 +29,15 @@ const reservationSchema = new mongoose.Schema(
 );
 
 // ✅ Unique booking: 1 table + 1 date + 1 timeslot cannot be duplicated
-reservationSchema.index({ table: 1, date: 1, timeSlot: 1 }, { unique: true });
-
+//reservationSchema.index({ table: 1, date: 1, timeSlot: 1 }, { unique: true });
+reservationSchema.index(
+  { table: 1, date: 1, timeSlot: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: "ACTIVE" },
+  }
+);
 module.exports = mongoose.model("Reservation", reservationSchema);
+
+
+
