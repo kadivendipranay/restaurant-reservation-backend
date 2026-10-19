@@ -1,35 +1,31 @@
-//server.js
+
 require("dotenv").config();
+
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const aiRoutes = require("./src/routes/ai.routes");
 
+const aiRoutes = require("./src/routes/ai.routes");
 const authRoutes = require("./src/routes/auth.routes");
 const reservationRoutes = require("./src/routes/reservation.routes");
-const authMiddleware = require("./src/middlewares/auth.middleware");
-const roleMiddleware = require("./src/middlewares/role.middleware");
 const insightsRoutes = require("./src/routes/insights.routes");
 
-
-
-// ✅ IMPORTANT: Update this path if your model file name is different
+const authMiddleware = require("./src/middlewares/auth.middleware");
+const roleMiddleware = require("./src/middlewares/role.middleware");
 const User = require("./src/models/User");
 
-const app = express();             
+const app = express();
 
-// ✅ middleware
+// Middleware
 app.use(express.json());
-
-// ✅ permanent dev CORS
 app.use(cors({ origin: true, credentials: true }));
 
-// ✅ test route
+// Health check
 app.get("/", (req, res) => {
   res.send("API working");
 });
 
-// ✅ protected test route
+// Protected test route
 app.get("/api/protected", authMiddleware, (req, res) => {
   res.json({
     message: "Access granted",
@@ -37,21 +33,27 @@ app.get("/api/protected", authMiddleware, (req, res) => {
   });
 });
 
-// ✅ admin-only route
-app.get("/api/admin-only", authMiddleware, roleMiddleware("ADMIN"), (req, res) => {
-  res.json({
-    message: "Admin access granted",
-    user: req.user,
-  });
-});
+// Admin-only test route
+app.get(
+  "/api/admin-only",
+  authMiddleware,
+  roleMiddleware("ADMIN"),
+  (req, res) => {
+    res.json({
+      message: "Admin access granted",
+      user: req.user,
+    });
+  }
+);
 
-// ✅ routes
+// API routes
 app.use("/api/auth", authRoutes);
 app.use("/api/reservations", reservationRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/insights", insightsRoutes);
 
-// ✅ TEMP route: make a user ADMIN (remove after testing)
+// TEMPORARY: Make a user ADMIN.
+// Remove this route after testing and use a secure admin-management method.
 app.put("/api/make-admin", async (req, res) => {
   try {
     const { email } = req.body;
@@ -61,7 +63,7 @@ app.put("/api/make-admin", async (req, res) => {
     }
 
     const updatedUser = await User.findOneAndUpdate(
-      { email },
+      { email: email.trim().toLowerCase() },
       { role: "ADMIN" },
       { new: true }
     );
@@ -78,23 +80,25 @@ app.put("/api/make-admin", async (req, res) => {
       },
     });
   } catch (err) {
-    return res.status(500).json({ message: err.message });
+    console.error("MAKE ADMIN ERROR:", err.message);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-// ✅ db + server
+// Start server
+const PORT = process.env.PORT || 5000;
+
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("MongoDB Connected Successfully");
 
-    // ✅ Windows localhost binding fix
-    app.listen(5000, "0.0.0.0", () => {
-      console.log("Server started on port 5000");
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server started on port ${PORT}`);
+      console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
     });
   })
   .catch((error) => {
     console.error("MongoDB connection error:", error.message);
+    process.exit(1);
   });
-
-  
