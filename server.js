@@ -12,22 +12,27 @@ const insightsRoutes = require("./src/routes/insights.routes");
 
 const authMiddleware = require("./src/middlewares/auth.middleware");
 const roleMiddleware = require("./src/middlewares/role.middleware");
-const User = require("./src/models/User");
 
 const app = express();
 
 // Middleware
 app.use(express.json());
-app.use(cors({ origin: true, credentials: true }));
+
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
 
 // Health check
 app.get("/", (req, res) => {
-  res.send("API working");
+  res.status(200).send("API working");
 });
 
 // Protected test route
 app.get("/api/protected", authMiddleware, (req, res) => {
-  res.json({
+  res.status(200).json({
     message: "Access granted",
     user: req.user,
   });
@@ -39,7 +44,7 @@ app.get(
   authMiddleware,
   roleMiddleware("ADMIN"),
   (req, res) => {
-    res.json({
+    res.status(200).json({
       message: "Admin access granted",
       user: req.user,
     });
@@ -52,41 +57,43 @@ app.use("/api/reservations", reservationRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/insights", insightsRoutes);
 
-// TEMPORARY: Make a user ADMIN.
-// Remove this route after testing and use a secure admin-management method.
-app.put("/api/make-admin", async (req, res) => {
-  try {
-    const { email } = req.body;
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.method} ${req.originalUrl}`,
+  });
+});
 
-    if (!email) {
-      return res.status(400).json({ message: "Email is required" });
-    }
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error("Server error:", err.message);
 
-    const updatedUser = await User.findOneAndUpdate(
-      { email: email.trim().toLowerCase() },
-      { role: "ADMIN" },
-      { new: true }
-    );
-
-    if (!updatedUser) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    return res.json({
-      message: "Updated to ADMIN",
-      user: {
-        email: updatedUser.email,
-        role: updatedUser.role,
-      },
-    });
-  } catch (err) {
-    console.error("MAKE ADMIN ERROR:", err.message);
-    return res.status(500).json({ message: "Server error" });
+  if (res.headersSent) {
+    return next(err);
   }
+
+  res.status(err.status || 500).json({
+    success: false,
+    message:
+      process.env.NODE_ENV === "production"
+        ? "Internal server error"
+        : err.message,
+  });
 });
 
 // Start server
 const PORT = process.env.PORT || 5000;
+
+if (!process.env.MONGO_URI) {
+  console.error("MONGO_URI is missing from environment variables.");
+  process.exit(1);
+}
+
+if (!process.env.JWT_SECRET) {
+  console.error("JWT_SECRET is missing from environment variables.");
+  process.exit(1);
+}
 
 mongoose
   .connect(process.env.MONGO_URI)
@@ -95,7 +102,6 @@ mongoose
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server started on port ${PORT}`);
-      console.log("JWT_SECRET loaded:", Boolean(process.env.JWT_SECRET));
     });
   })
   .catch((error) => {

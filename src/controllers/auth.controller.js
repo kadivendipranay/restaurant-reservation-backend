@@ -1,47 +1,76 @@
+
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 
-// ✅ REGISTER
+// Generate JWT token
+const generateToken = (user) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is not configured");
+  }
+
+  return jwt.sign(
+    {
+      userId: user._id.toString(),
+      role: user.role,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "1d" }
+  );
+};
+
+// REGISTER
 const register = async (req, res) => {
   try {
-    let { name, email, password, role } = req.body;
+    let { name, email, password } = req.body;
 
-    // ✅ trim inputs
-    name = name?.trim();
-    email = email?.trim().toLowerCase();
-    password = password?.trim();
+    name = typeof name === "string" ? name.trim() : "";
+    email = typeof email === "string" ? email.trim().toLowerCase() : "";
 
-    // ✅ validation
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: "Name, Email, Password required" });
+    // Do not trim passwords; spaces may be intentional.
+    if (
+      typeof password !== "string" ||
+      !name ||
+      !email ||
+      !password.trim()
+    ) {
+      return res.status(400).json({
+        message: "Name, Email, and Password are required",
+      });
     }
 
-    // ✅ check already exists
+    if (password.length < 8) {
+      return res.status(400).json({
+        message: "Password must be at least 8 characters long",
+      });
+    }
+
+    // Basic email format validation
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailPattern.test(email)) {
+      return res.status(400).json({
+        message: "Please provide a valid email address",
+      });
+    }
+
     const existingUser = await User.findOne({ email });
+
     if (existingUser) {
-      return res.status(409).json({ message: "Email already registered" });
+      return res.status(409).json({
+        message: "Email already registered",
+      });
     }
 
-    // ✅ create user (DO NOT hash here, model will hash automatically)
-    // const user = await User.create({
-    //   name,
-    //   email,
-    //   password, // ✅ plain password
-    //   role: role || "USER",
-    // });
+    // Public registration must never accept a client-supplied role.
+    // The User model should hash the password automatically if configured.
     const user = await User.create({
-  name,
-  email,
-  password,
-  role: "USER",
-});
+      name,
+      email,
+      password,
+      role: "USER",
+    });
 
-    // ✅ generate token
-    const token = jwt.sign(
-      { userId: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
+    const token = generateToken(user);
 
     return res.status(201).json({
       message: "User registered successfully",
@@ -49,53 +78,82 @@ const register = async (req, res) => {
       role: user.role,
     });
   } catch (error) {
-    console.error("REGISTER ERROR:", error);
-    return res.status(500).json({ message: "Server error" });
+    console.error("REGISTER ERROR:", error.message);
+
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message: "Email already registered",
+      });
+    }
+
+    if (error.message === "JWT_SECRET is not configured") {
+      return res.status(500).json({
+        message: "Server configuration error",
+      });
+    }
+
+    return res.status(500).json({
+      message: "Server error",
+    });
   }
 };
 
-// ✅ LOGIN
+// LOGIN
 const login = async (req, res) => {
   try {
     let { email, password } = req.body;
 
-    email = email?.trim().toLowerCase();
-    password = password?.trim();
+    email = typeof email === "string"
+      ? email.trim().toLowerCase()
+      : "";
 
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and Password required" });
+    if (
+      !email ||
+      typeof password !== "string" ||
+      !password
+    ) {
+      return res.status(400).json({
+        message: "Email and Password are required",
+      });
     }
 
-    const user = await User.findOne({ email });
+   const user = await User.findOne({ email }).select("+password");
+
     if (!user) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      return res.status(401).json({
+        message: "Invalid credentials",
+      });
     }
 
-    // ✅ compare plain password with hashed password in DB
-    const isMatch = await user.comparePassword(password); // ✅ uses model method
-   
+    // User model must implement comparePassword().
+    const isMatch = await user.comparePassword(password);
+
     if (!isMatch) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      return res.status(401).json({
+        message: "Invalid credentials",
+      });
     }
 
-    const token = jwt.sign(
-      { userId: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
+    const token = generateToken(user);
 
-    return res.json({
+    return res.status(200).json({
       message: "Login successful",
       token,
       role: user.role,
     });
   } catch (error) {
-    console.error("LOGIN ERROR:", error);
-    return res.status(500).json({ message: "Server error" });
+    console.error("LOGIN ERROR:", error.message);
+
+    if (error.message === "JWT_SECRET is not configured") {
+      return res.status(500).json({
+        message: "Server configuration error",
+      });
+    }
+
+    return res.status(500).json({
+      message: "Server error",
+    });
   }
 };
 
 module.exports = { register, login };
-
-
-

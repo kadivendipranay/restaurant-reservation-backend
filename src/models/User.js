@@ -1,3 +1,4 @@
+
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
@@ -22,7 +23,8 @@ const userSchema = new mongoose.Schema(
     password: {
       type: String,
       required: [true, "Password is required"],
-      minlength: 4,
+      minlength: 8,
+      select: false,
     },
 
     role: {
@@ -34,27 +36,18 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ hash password before saving
-userSchema.pre("save", async function (next) {
-  try {
-    // only hash when password is modified (new user OR password update)
-    if (!this.isModified("password")) return next();
+// Hash password only when it is new or modified.
+userSchema.pre("save", async function () {
+  if (!this.isModified("password")) return;
 
-    const saltRounds = 10;
-    this.password = await bcrypt.hash(this.password, saltRounds);
-
-    next();
-  } catch (error) {
-    next(error);
-  }
+  this.password = await bcrypt.hash(this.password, 10);
 });
 
-// ✅ helper method to compare password (optional but clean)
+// Compare entered password with stored hash.
 userSchema.methods.comparePassword = async function (enteredPassword) {
+  if (typeof enteredPassword !== "string") return false;
+
   return bcrypt.compare(enteredPassword, this.password);
 };
 
 module.exports = mongoose.model("User", userSchema);
-
-
-
