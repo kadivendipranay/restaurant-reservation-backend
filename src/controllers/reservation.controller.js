@@ -36,6 +36,9 @@ const markCompletedReservations = async () => {
 
 // CREATE RESERVATION
 const createReservation = async (req, res) => {
+  // A trace ID keeps logs from different requests from being mixed together.
+  const traceId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
   try {
     const { date, timeSlot } = req.body;
     const guests = Number(req.body.guests);
@@ -120,36 +123,39 @@ const createReservation = async (req, res) => {
       });
     }
 
-    // TEMPORARY DIAGNOSTICS: check the exact lookup used by this request.
-    console.log("BOOKING DEBUG:", {
-      userId: String(userId),
-      date: normalizedDate,
-      timeSlot: normalizedTimeSlot,
-    });
-
-    const alreadyBooked = await Reservation.findOne({
+    // Diagnostic logs are tagged so entries from different requests cannot be confused.
+    const duplicateQuery = {
       user: userId,
       date: normalizedDate,
       timeSlot: normalizedTimeSlot,
       status: "ACTIVE",
+    };
+
+    console.log(`[${traceId}] BOOKING DEBUG`, {
+      userId: String(userId),
+      date: normalizedDate,
+      timeSlot: normalizedTimeSlot,
+      database: Reservation.db.name,
+      collection: Reservation.collection.name,
     });
 
-    console.log(
-      "MATCHING ACTIVE RESERVATION:",
-      alreadyBooked
-        ? {
-            reservationId: String(alreadyBooked._id),
-            userId: String(alreadyBooked.user),
-            date: alreadyBooked.date,
-            timeSlot: alreadyBooked.timeSlot,
-            status: alreadyBooked.status,
-          }
-        : null
+    const alreadyBooked = await Reservation.findOne(duplicateQuery).lean();
+
+    console.log(`[${traceId}] DUPLICATE CHECK RESULT`, alreadyBooked
+      ? {
+          reservationId: String(alreadyBooked._id),
+          userId: String(alreadyBooked.user),
+          date: alreadyBooked.date,
+          timeSlot: alreadyBooked.timeSlot,
+          status: alreadyBooked.status,
+        }
+      : null
     );
 
     if (alreadyBooked) {
-      return res.status(400).json({
-        message: "You already have a reservation for this time slot",
+      return res.status(409).json({
+        message: "You already have an active reservation for this date and time slot.",
+        traceId,
       });
     }
 
@@ -199,16 +205,18 @@ const createReservation = async (req, res) => {
       message: "No tables available for this time slot",
     });
   } catch (error) {
-    console.error("CREATE RESERVATION ERROR:", error);
+    console.error(`[${traceId}] CREATE RESERVATION ERROR:`, error);
 
     if (error.code === 11000) {
       return res.status(409).json({
         message: "A booking conflict occurred. Please refresh and try again.",
+        traceId,
       });
     }
 
     return res.status(500).json({
       message: "Server error while creating reservation",
+      traceId,
     });
   }
 };
