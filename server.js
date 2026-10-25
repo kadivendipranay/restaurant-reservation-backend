@@ -56,6 +56,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/reservations", reservationRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/insights", insightsRoutes);
+app.use("/api/ai", require("./src/routes/ai.routes"));
 
 // 404 handler
 app.use((req, res) => {
