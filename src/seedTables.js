@@ -1,4 +1,6 @@
+
 require("dotenv").config();
+
 const mongoose = require("mongoose");
 const Table = require("./models/Table");
 
@@ -12,17 +14,36 @@ const tables = [
 
 async function seed() {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log("MongoDB Connected");
+    if (!process.env.MONGO_URI) {
+      throw new Error("MONGO_URI is missing from the .env file");
+    }
 
-    await Table.deleteMany(); // clear existing tables (safe for dev)
-    await Table.insertMany(tables);
+    await mongoose.connect(process.env.MONGO_URI);
+    console.log("MongoDB connected successfully");
+
+    for (const tableData of tables) {
+      await Table.findOneAndUpdate(
+        { tableNumber: tableData.tableNumber },
+        { $set: { capacity: tableData.capacity } },
+        {
+          upsert: true,
+          new: true,
+          runValidators: true,
+          setDefaultsOnInsert: true,
+        }
+      );
+    }
 
     console.log("Tables seeded successfully");
-    process.exit();
-  } catch (err) {
-    console.error("Seeding error:", err.message);
-    process.exit(1);
+    console.log("Existing tables were preserved.");
+
+  } catch (error) {
+    console.error("Seeding error:", error.message);
+    process.exitCode = 1;
+
+  } finally {
+    await mongoose.disconnect();
+    console.log("MongoDB connection closed");
   }
 }
 
