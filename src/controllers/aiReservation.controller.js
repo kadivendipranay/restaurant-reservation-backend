@@ -1,3 +1,4 @@
+//aiReservation.controller.js
 const Reservation = require("../models/Reservation");
 const Table = require("../models/Table");
 

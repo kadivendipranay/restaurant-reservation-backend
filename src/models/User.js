@@ -1,4 +1,4 @@
-
+//User.js
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
@@ -27,11 +27,21 @@ const userSchema = new mongoose.Schema(
       select: false,
     },
 
-    role: {
-      type: String,
-      enum: ["USER", "ADMIN"],
-      default: "USER",
-    },
+ role: {
+  type: String,
+  enum: ["USER", "ADMIN"],
+  default: "USER",
+},
+
+resetPasswordToken: {
+  type: String,
+  select: false,
+},
+
+resetPasswordExpires: {
+  type: Date,
+  select: false,
+},
   },
   { timestamps: true }
 );

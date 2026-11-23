@@ -1,3 +1,4 @@
+//insights.controller.js
 
 const Reservation = require("../models/Reservation");
 

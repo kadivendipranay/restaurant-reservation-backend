@@ -1,4 +1,4 @@
-
+//ai.controller.js
 const foodItems = [
   { name: "Veg Biryani", category: "Vegetarian", price: 180 },
   { name: "Paneer Butter Masala", category: "Vegetarian", price: 220 },
