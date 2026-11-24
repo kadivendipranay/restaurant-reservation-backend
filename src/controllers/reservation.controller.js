@@ -1,378 +1,408 @@
-
+const mongoose = require("mongoose");
 const Reservation = require("../models/Reservation");
 const Table = require("../models/Table");
+const User = require("../models/User");
 
-const ALLOWED_TIME_SLOTS = [
+const ALLOWED_SLOTS = [
   "17:00-18:00",
   "18:00-19:00",
   "19:00-20:00",
   "20:00-21:00",
 ];
 
-// Use a consistent YYYY-MM-DD format based on the server's local date.
-const getTodayString = () => {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
+const ALLOWED_OCCASIONS = [
+  "None",
+  "Birthday",
+  "Anniversary",
+  "Business",
+  "Date Night",
+];
 
-  return `${year}-${month}-${day}`;
-};
+const pad = (value) => String(value).padStart(2, "0");
 
-// Mark past ACTIVE reservations as COMPLETED.
-const markCompletedReservations = async () => {
-  const todayString = getTodayString();
+const getLocalDateString = (date = new Date()) =>
+  `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 
-  await Reservation.updateMany(
-    {
-      status: "ACTIVE",
-      date: { $lt: todayString },
-    },
-    {
-      $set: { status: "COMPLETED" },
-    }
-  );
-};
+function isValidObjectId(id) {
+  return typeof id === "string" && mongoose.Types.ObjectId.isValid(id);
+}
 
-// CREATE RESERVATION
-const createReservation = async (req, res) => {
-  // A trace ID keeps logs from different requests from being mixed together.
-  const traceId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+function normalizeDate(value) {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
 
-  try {
-    const { date, timeSlot } = req.body;
-    const guests = Number(req.body.guests);
-    const userId = req.user?.userId;
+  const [, y, m, d] = match;
+  const parsed = new Date(Number(y), Number(m) - 1, Number(d));
+  if (
+    parsed.getFullYear() !== Number(y) ||
+    parsed.getMonth() !== Number(m) - 1 ||
+    parsed.getDate() !== Number(d)
+  ) {
+    return null;
+  }
+  return `${y}-${m}-${d}`;
+}
 
-    if (!userId) {
-      return res.status(401).json({
-        message: "Authentication required. Please log in again.",
-      });
-    }
+function validateBookingInput({ date, timeSlot, guests }) {
+  const cleanDate = normalizeDate(date);
+  if (!cleanDate) {
+    return { error: "Please provide a valid date in YYYY-MM-DD format." };
+  }
 
-    if (
-      typeof date !== "string" ||
-      typeof timeSlot !== "string" ||
-      req.body.guests === undefined ||
-      req.body.guests === null ||
-      req.body.guests === ""
-    ) {
-      return res.status(400).json({
-        message: "Date, time slot, and guests are required",
-      });
-    }
+  const today = getLocalDateString();
+  if (cleanDate < today) {
+    return {
+      error: "Past dates are not allowed. Please choose today or a future date.",
+    };
+  }
 
-    const normalizedDate = date.trim();
-    const normalizedTimeSlot = timeSlot.trim();
+  const maxDateObj = new Date();
+  maxDateObj.setFullYear(maxDateObj.getFullYear() + 1);
+  if (cleanDate > getLocalDateString(maxDateObj)) {
+    return { error: "Bookings are allowed only within the next 12 months." };
+  }
 
-    if (!Number.isInteger(guests) || guests < 1) {
-      return res.status(400).json({
-        message: "Guests must be a positive whole number",
-      });
-    }
+  if (!ALLOWED_SLOTS.includes(timeSlot)) {
+    return {
+      error: "Please select a valid time slot (17:00-18:00 to 20:00-21:00).",
+    };
+  }
 
-    if (guests > 20) {
-      return res.status(400).json({
-        message: "Maximum guests allowed is 20",
-      });
-    }
+  const guestCount = Number(guests);
+  if (!Number.isInteger(guestCount) || guestCount < 1 || guestCount > 20) {
+    return {
+      error: "Number of guests must be a whole number between 1 and 20.",
+    };
+  }
 
-    if (!ALLOWED_TIME_SLOTS.includes(normalizedTimeSlot)) {
-      return res.status(400).json({
-        message: "Invalid time slot. Please select a valid slot.",
-        allowedSlots: ALLOWED_TIME_SLOTS,
-      });
-    }
+  return { cleanDate, timeSlot, guestCount };
+}
 
-    // Strictly validate YYYY-MM-DD without date rollover.
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) {
-      return res.status(400).json({
-        message: "Invalid date format. Use YYYY-MM-DD.",
-      });
-    }
+function sanitizeOccasion(occasion) {
+  return ALLOWED_OCCASIONS.includes(occasion) ? occasion : "None";
+}
 
-    const [year, month, day] = normalizedDate.split("-").map(Number);
-    const reservationDate = new Date(Date.UTC(year, month - 1, day));
+function sanitizeNotes(notes) {
+  return typeof notes === "string" ? notes.trim().slice(0, 200) : "";
+}
 
-    if (
-      reservationDate.getUTCFullYear() !== year ||
-      reservationDate.getUTCMonth() !== month - 1 ||
-      reservationDate.getUTCDate() !== day
-    ) {
-      return res.status(400).json({
-        message: "Invalid calendar date",
-      });
-    }
+async function findAvailableBestFitTable({
+  date,
+  timeSlot,
+  guests,
+  excludeReservationId = null,
+}) {
+  const candidateTables = await Table.find({ capacity: { $gte: guests } }).sort({
+    capacity: 1,
+    tableNumber: 1,
+  });
 
-    const todayString = getTodayString();
-    const today = new Date(`${todayString}T00:00:00Z`);
-    const oneYearLater = new Date(today);
-    oneYearLater.setUTCFullYear(oneYearLater.getUTCFullYear() + 1);
+  if (!candidateTables.length) {
+    return {
+      table: null,
+      reason: "No table can accommodate this party size.",
+    };
+  }
 
-    const oneYearLaterString = oneYearLater.toISOString().slice(0, 10);
-
-    if (normalizedDate < todayString) {
-      return res.status(400).json({
-        message: "Past dates are not allowed",
-      });
-    }
-
-    if (normalizedDate > oneYearLaterString) {
-      return res.status(400).json({
-        message: "Booking is allowed only within one year",
-      });
-    }
-
-    // Diagnostic logs are tagged so entries from different requests cannot be confused.
-    const duplicateQuery = {
-      user: userId,
-      date: normalizedDate,
-      timeSlot: normalizedTimeSlot,
+  for (const table of candidateTables) {
+    const query = {
+      table: table._id,
+      date,
+      timeSlot,
       status: "ACTIVE",
     };
+    if (excludeReservationId) {
+      query._id = { $ne: excludeReservationId };
+    }
 
-    console.log(`[${traceId}] BOOKING DEBUG`, {
-      userId: String(userId),
-      date: normalizedDate,
-      timeSlot: normalizedTimeSlot,
-      database: Reservation.db.name,
-      collection: Reservation.collection.name,
+    const conflict = await Reservation.findOne(query).lean();
+    if (!conflict) {
+      return { table, reason: null };
+    }
+  }
+
+  return {
+    table: null,
+    reason: "All suitable tables are already booked for that date and time slot.",
+  };
+}
+
+// =========================================================
+// USER CONTROLLERS
+// =========================================================
+
+// GET /api/reservations/availability?date=YYYY-MM-DD&guests=2
+const getSlotAvailability = async (req, res) => {
+  try {
+    const cleanDate = normalizeDate(req.query?.date);
+    const rawGuests =
+      req.query?.guests === undefined || req.query?.guests === ""
+        ? 1
+        : Number(req.query.guests);
+
+    if (!cleanDate) {
+      return res
+        .status(400)
+        .json({ message: "Valid date (YYYY-MM-DD) is required." });
+    }
+
+    if (!Number.isInteger(rawGuests) || rawGuests < 1 || rawGuests > 20) {
+      return res
+        .status(400)
+        .json({ message: "Guests must be a whole number between 1 and 20." });
+    }
+
+    const [suitableTables, activeBookings] = await Promise.all([
+      Table.find({ capacity: { $gte: rawGuests } })
+        .select("_id capacity")
+        .lean(),
+      Reservation.find({ date: cleanDate, status: "ACTIVE" })
+        .select("timeSlot table")
+        .lean(),
+    ]);
+
+    const slots = ALLOWED_SLOTS.map((slot) => {
+      const bookedTableIds = new Set(
+        activeBookings
+          .filter((booking) => booking.timeSlot === slot)
+          .map((booking) => String(booking.table))
+      );
+
+      const availableTables = suitableTables.filter(
+        (table) => !bookedTableIds.has(String(table._id))
+      ).length;
+
+      return {
+        timeSlot: slot,
+        availableTables,
+        available: availableTables > 0,
+      };
     });
 
-    const alreadyBooked = await Reservation.findOne(duplicateQuery).lean();
-
-    console.log(`[${traceId}] DUPLICATE CHECK RESULT`, alreadyBooked
-      ? {
-          reservationId: String(alreadyBooked._id),
-          userId: String(alreadyBooked.user),
-          date: alreadyBooked.date,
-          timeSlot: alreadyBooked.timeSlot,
-          status: alreadyBooked.status,
-        }
-      : null
-    );
-
-    if (alreadyBooked) {
-      return res.status(409).json({
-        message: "You already have an active reservation for this date and time slot.",
-        traceId,
-      });
-    }
-
-    // Find suitable tables, smallest capacity first.
-    const tables = await Table.find({
-      capacity: { $gte: guests },
-    }).sort({ capacity: 1 });
-
-    if (!tables.length) {
-      return res.status(400).json({
-        message: "No table available for this number of guests",
-      });
-    }
-
-    for (const table of tables) {
-      const conflict = await Reservation.findOne({
-        table: table._id,
-        date: normalizedDate,
-        timeSlot: normalizedTimeSlot,
-        status: "ACTIVE",
-      });
-
-      if (conflict) {
-        continue;
-      }
-
-      const reservation = await Reservation.create({
-        user: userId,
-        table: table._id,
-        date: normalizedDate,
-        timeSlot: normalizedTimeSlot,
-        guests,
-        status: "ACTIVE",
-      });
-
-      const fullReservation = await Reservation.findById(reservation._id)
-        .populate("user", "name email role")
-        .populate("table", "tableNumber capacity");
-
-      return res.status(201).json({
-        message: "Reservation created successfully",
-        reservation: fullReservation,
-      });
-    }
-
-    return res.status(400).json({
-      message: "No tables available for this time slot",
-    });
+    return res.json({ date: cleanDate, guests: rawGuests, slots });
   } catch (error) {
-    console.error(`[${traceId}] CREATE RESERVATION ERROR:`, error);
-
-    if (error.code === 11000) {
-      return res.status(409).json({
-        message: "A booking conflict occurred. Please refresh and try again.",
-        traceId,
-      });
-    }
-
-    return res.status(500).json({
-      message: "Server error while creating reservation",
-      traceId,
-    });
+    console.error("Slot availability error:", error);
+    return res
+      .status(500)
+      .json({ message: "Unable to check slot availability." });
   }
 };
 
-// GET MY RESERVATIONS
-const getMyReservations = async (req, res) => {
+// POST /api/reservations
+const createReservation = async (req, res) => {
   try {
-    await markCompletedReservations();
+    const { date, timeSlot, guests, occasion, specialRequests } = req.body || {};
+    const validated = validateBookingInput({ date, timeSlot, guests });
 
-    const status = String(req.query.status || "ACTIVE").toUpperCase();
-    const allowedStatuses = ["ACTIVE", "CANCELLED", "COMPLETED", "ALL"];
+    if (validated.error) {
+      return res.status(400).json({ message: validated.error });
+    }
 
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        message: "Invalid reservation status",
+    const { cleanDate, guestCount } = validated;
+
+    const existingUserBooking = await Reservation.findOne({
+      user: req.user.userId,
+      date: cleanDate,
+      timeSlot,
+      status: "ACTIVE",
+    }).lean();
+
+    if (existingUserBooking) {
+      return res.status(409).json({
+        message:
+          "You already have an active reservation for this date and time slot.",
       });
     }
 
-    const filter = { user: req.user.userId };
+    const { table, reason } = await findAvailableBestFitTable({
+      date: cleanDate,
+      timeSlot,
+      guests: guestCount,
+    });
 
-    if (status !== "ALL") {
-      filter.status = status;
+    if (!table) {
+      return res.status(409).json({ message: reason });
+    }
+
+    const reservation = await Reservation.create({
+      user: req.user.userId,
+      table: table._id,
+      date: cleanDate,
+      timeSlot,
+      guests: guestCount,
+      occasion: sanitizeOccasion(occasion),
+      specialRequests: sanitizeNotes(specialRequests),
+      status: "ACTIVE",
+    });
+
+    const populated = await Reservation.findById(reservation._id)
+      .populate("user", "name email role")
+      .populate("table", "tableNumber capacity zone");
+
+    return res.status(201).json({
+      message: `Reservation confirmed! Assigned Table #${table.tableNumber}.`,
+      reservation: populated,
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message:
+          "That table was just booked by another guest. Please try again.",
+      });
+    }
+    console.error("Create reservation error:", error);
+    return res.status(500).json({ message: "Unable to create reservation." });
+  }
+};
+
+// GET /api/reservations/my
+const getMyReservations = async (req, res) => {
+  try {
+    const filter = { user: req.user.userId };
+    const { status } = req.query;
+
+    if (
+      status &&
+      ["ACTIVE", "COMPLETED", "CANCELLED"].includes(status.toUpperCase())
+    ) {
+      filter.status = status.toUpperCase();
     }
 
     const reservations = await Reservation.find(filter)
-      .populate("user", "name email role")
-      .populate("table", "tableNumber capacity")
-      .sort({ createdAt: -1 });
+      .populate("table", "tableNumber capacity zone")
+      .sort({ date: -1, timeSlot: 1, createdAt: -1 });
 
     return res.json(reservations);
   } catch (error) {
-    console.error("GET MY RESERVATIONS ERROR:", error);
-    return res.status(500).json({
-      message: "Server error while fetching reservations",
-    });
+    console.error("Get my reservations error:", error);
+    return res
+      .status(500)
+      .json({ message: "Unable to load your reservations." });
   }
 };
 
-// GET ALL RESERVATIONS (ADMIN)
-const getAllReservations = async (req, res) => {
-  try {
-    await markCompletedReservations();
-
-    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(
-      100,
-      Math.max(1, parseInt(req.query.limit, 10) || 5)
-    );
-    const skip = (page - 1) * limit;
-
-    const status = String(req.query.status || "ACTIVE").toUpperCase();
-    const allowedStatuses = ["ACTIVE", "CANCELLED", "COMPLETED", "ALL"];
-
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        message: "Invalid reservation status",
-      });
-    }
-
-    const search = String(req.query.search || "").trim().toLowerCase();
-    const sortOrder = String(req.query.sort || "asc").toLowerCase();
-    const sortValue = sortOrder === "desc" ? -1 : 1;
-
-    const filter = {};
-
-    if (status !== "ALL") {
-      filter.status = status;
-    }
-
-    let reservations = await Reservation.find(filter)
-      .populate("user", "name email role")
-      .populate("table", "tableNumber capacity")
-      .sort({ date: sortValue, createdAt: -1 });
-
-    if (search) {
-      reservations = reservations.filter((reservation) =>
-        reservation.user?.email?.toLowerCase().includes(search)
-      );
-    }
-
-    const total = reservations.length;
-    const data = reservations.slice(skip, skip + limit);
-
-    return res.json({
-      total,
-      page,
-      pages: Math.ceil(total / limit),
-      status,
-      search,
-      sort: sortOrder,
-      data,
-    });
-  } catch (error) {
-    console.error("GET ALL RESERVATIONS ERROR:", error);
-    return res.status(500).json({
-      message: "Server error while fetching reservations",
-    });
-  }
-};
-
-// CANCEL RESERVATION (USER)
-const cancelReservation = async (req, res) => {
+// PATCH /api/reservations/:id
+const updateReservation = async (req, res) => {
   try {
     const { id } = req.params;
-
-    if (!/^[a-f\d]{24}$/i.test(id)) {
-      return res.status(400).json({
-        message: "Invalid reservation ID",
-      });
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: "Invalid reservation ID." });
     }
 
     const reservation = await Reservation.findOne({
       _id: id,
       user: req.user.userId,
-      status: "ACTIVE",
     });
 
     if (!reservation) {
-      return res.status(404).json({
-        message: "Active reservation not found",
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status !== "ACTIVE") {
+      return res.status(400).json({
+        message: "Only active reservations can be rescheduled or modified.",
       });
     }
 
-    reservation.status = "CANCELLED";
+    const rawDate =
+      req.body.date !== undefined ? req.body.date : reservation.date;
+    const rawSlot =
+      req.body.timeSlot !== undefined ? req.body.timeSlot : reservation.timeSlot;
+    const rawGuests =
+      req.body.guests !== undefined ? req.body.guests : reservation.guests;
+
+    const validated = validateBookingInput({
+      date: rawDate,
+      timeSlot: rawSlot,
+      guests: rawGuests,
+    });
+
+    if (validated.error) {
+      return res.status(400).json({ message: validated.error });
+    }
+
+    const { cleanDate, timeSlot, guestCount } = validated;
+
+    const userConflict = await Reservation.findOne({
+      _id: { $ne: reservation._id },
+      user: req.user.userId,
+      date: cleanDate,
+      timeSlot,
+      status: "ACTIVE",
+    }).lean();
+
+    if (userConflict) {
+      return res.status(409).json({
+        message:
+          "You already have another active reservation at that date and time.",
+      });
+    }
+
+    const { table, reason } = await findAvailableBestFitTable({
+      date: cleanDate,
+      timeSlot,
+      guests: guestCount,
+      excludeReservationId: reservation._id,
+    });
+
+    if (!table) {
+      return res.status(409).json({ message: reason });
+    }
+
+    reservation.date = cleanDate;
+    reservation.timeSlot = timeSlot;
+    reservation.guests = guestCount;
+    reservation.table = table._id;
+
+    if (req.body.occasion !== undefined) {
+      reservation.occasion = sanitizeOccasion(req.body.occasion);
+    }
+    if (req.body.specialRequests !== undefined) {
+      reservation.specialRequests = sanitizeNotes(req.body.specialRequests);
+    }
+
     await reservation.save();
 
+    const updated = await Reservation.findById(reservation._id)
+      .populate("user", "name email role")
+      .populate("table", "tableNumber capacity zone");
+
     return res.json({
-      message: "Reservation cancelled successfully",
+      message: `Reservation updated! Assigned Table #${table.tableNumber}.`,
+      reservation: updated,
     });
   } catch (error) {
-    console.error("CANCEL RESERVATION ERROR:", error);
-    return res.status(500).json({
-      message: "Server error while cancelling reservation",
-    });
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message: "That slot was just booked. Please try another time.",
+      });
+    }
+    console.error("Update reservation error:", error);
+    return res.status(500).json({ message: "Unable to update reservation." });
   }
 };
 
-// CANCEL RESERVATION (ADMIN)
-const cancelReservationByAdmin = async (req, res) => {
+// PATCH /api/reservations/:id/cancel
+const cancelReservation = async (req, res) => {
   try {
     const { id } = req.params;
-
-    if (!/^[a-f\d]{24}$/i.test(id)) {
-      return res.status(400).json({
-        message: "Invalid reservation ID",
-      });
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: "Invalid reservation ID." });
     }
 
     const reservation = await Reservation.findOne({
       _id: id,
-      status: "ACTIVE",
+      user: req.user.userId,
     });
 
     if (!reservation) {
-      return res.status(404).json({
-        message: "Active reservation not found",
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status !== "ACTIVE") {
+      return res.status(400).json({
+        message: `Cannot cancel a reservation that is already ${reservation.status.toLowerCase()}.`,
       });
     }
 
@@ -380,95 +410,194 @@ const cancelReservationByAdmin = async (req, res) => {
     await reservation.save();
 
     return res.json({
-      message: "Reservation cancelled by admin",
+      message: "Reservation cancelled successfully.",
+      reservation,
     });
   } catch (error) {
-    console.error("ADMIN CANCEL ERROR:", error);
-    return res.status(500).json({
-      message: "Server error while cancelling reservation",
-    });
+    console.error("Cancel reservation error:", error);
+    return res.status(500).json({ message: "Unable to cancel reservation." });
   }
 };
 
-// RESTORE RESERVATION (ADMIN)
-const restoreReservationByAdmin = async (req, res) => {
+// =========================================================
+// ADMIN CONTROLLERS
+// =========================================================
+
+// GET /api/reservations/all
+const getAllReservations = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 5));
+    const status = (req.query.status || "").toUpperCase();
+    const search = (req.query.search || "").trim();
+    const date = normalizeDate(req.query.date);
+
+    const filter = {};
+
+    if (
+      status &&
+      status !== "ALL" &&
+      ["ACTIVE", "CANCELLED", "COMPLETED"].includes(status)
+    ) {
+      filter.status = status;
+    }
+
+    if (date) {
+      filter.date = date;
+    }
+
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const matchingUsers = await User.find({
+        $or: [
+          { email: { $regex: escaped, $options: "i" } },
+          { name: { $regex: escaped, $options: "i" } },
+        ],
+      })
+        .select("_id")
+        .lean();
+
+      filter.user = { $in: matchingUsers.map((u) => u._id) };
+    }
+
+    const [total, data] = await Promise.all([
+      Reservation.countDocuments(filter),
+      Reservation.find(filter)
+        .populate("user", "name email role")
+        .populate("table", "tableNumber capacity zone")
+        .sort({ date: -1, timeSlot: 1, createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
+    ]);
+
+    const pages = Math.max(1, Math.ceil(total / limit));
+
+    return res.json({
+      data,
+      total,
+      page,
+      pages,
+    });
+  } catch (error) {
+    console.error("Get all reservations error:", error);
+    return res.status(500).json({ message: "Unable to load reservations." });
+  }
+};
+
+// PATCH /api/reservations/admin-cancel/:id
+const cancelReservationByAdmin = async (req, res) => {
   try {
     const { id } = req.params;
-
-    if (!/^[a-f\d]{24}$/i.test(id)) {
-      return res.status(400).json({
-        message: "Invalid reservation ID",
-      });
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: "Invalid reservation ID." });
     }
 
     const reservation = await Reservation.findById(id);
-
     if (!reservation) {
-      return res.status(404).json({
-        message: "Reservation not found",
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status !== "ACTIVE") {
+      return res.status(400).json({
+        message: "Only active reservations can be cancelled.",
       });
+    }
+
+    reservation.status = "CANCELLED";
+    await reservation.save();
+
+    return res.json({
+      message: "Reservation cancelled by admin.",
+      reservation,
+    });
+  } catch (error) {
+    console.error("Admin cancel error:", error);
+    return res.status(500).json({ message: "Unable to cancel reservation." });
+  }
+};
+
+// PATCH /api/reservations/admin-restore/:id
+const restoreReservationByAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: "Invalid reservation ID." });
+    }
+
+    const reservation = await Reservation.findById(id);
+    if (!reservation) {
+      return res.status(404).json({ message: "Reservation not found." });
     }
 
     if (reservation.status !== "CANCELLED") {
       return res.status(400).json({
-        message: "Only CANCELLED reservations can be restored",
+        message: "Only cancelled reservations can be restored.",
       });
     }
 
-    const conflict = await Reservation.findOne({
+    const originalTableConflict = await Reservation.findOne({
       _id: { $ne: reservation._id },
       table: reservation.table,
       date: reservation.date,
       timeSlot: reservation.timeSlot,
       status: "ACTIVE",
-    });
+    }).lean();
 
-    if (conflict) {
-      return res.status(409).json({
-        message: "Cannot restore because this table and slot are already booked",
+    if (originalTableConflict) {
+      const { table: fallbackTable, reason } = await findAvailableBestFitTable({
+        date: reservation.date,
+        timeSlot: reservation.timeSlot,
+        guests: reservation.guests,
+        excludeReservationId: reservation._id,
       });
+
+      if (!fallbackTable) {
+        return res.status(409).json({
+          message: `Cannot restore: original table is now booked and ${reason.toLowerCase()}`,
+        });
+      }
+
+      reservation.table = fallbackTable._id;
     }
 
     reservation.status = "ACTIVE";
     await reservation.save();
 
+    const populated = await Reservation.findById(reservation._id)
+      .populate("user", "name email role")
+      .populate("table", "tableNumber capacity zone");
+
     return res.json({
-      message: "Reservation restored successfully",
+      message: `Reservation restored (Table #${populated.table?.tableNumber}).`,
+      reservation: populated,
     });
   } catch (error) {
-    console.error("ADMIN RESTORE ERROR:", error);
-
     if (error.code === 11000) {
       return res.status(409).json({
-        message: "Cannot restore because this table and slot are already booked",
+        message: "Cannot restore: that table and time slot are already booked.",
       });
     }
-
-    return res.status(500).json({
-      message: "Server error while restoring reservation",
-    });
+    console.error("Admin restore error:", error);
+    return res.status(500).json({ message: "Unable to restore reservation." });
   }
 };
 
-// COMPLETE RESERVATION (ADMIN)
+// PATCH /api/reservations/admin-complete/:id
 const completeReservationByAdmin = async (req, res) => {
   try {
     const { id } = req.params;
-
-    if (!/^[a-f\d]{24}$/i.test(id)) {
-      return res.status(400).json({
-        message: "Invalid reservation ID",
-      });
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: "Invalid reservation ID." });
     }
 
-    const reservation = await Reservation.findOne({
-      _id: id,
-      status: "ACTIVE",
-    });
-
+    const reservation = await Reservation.findById(id);
     if (!reservation) {
-      return res.status(404).json({
-        message: "Active reservation not found",
+      return res.status(404).json({ message: "Reservation not found." });
+    }
+
+    if (reservation.status !== "ACTIVE") {
+      return res.status(400).json({
+        message: "Only active reservations can be marked as completed.",
       });
     }
 
@@ -476,21 +605,22 @@ const completeReservationByAdmin = async (req, res) => {
     await reservation.save();
 
     return res.json({
-      message: "Reservation marked as completed",
+      message: "Reservation marked as completed.",
+      reservation,
     });
   } catch (error) {
-    console.error("ADMIN COMPLETE ERROR:", error);
-    return res.status(500).json({
-      message: "Server error while completing reservation",
-    });
+    console.error("Admin complete error:", error);
+    return res.status(500).json({ message: "Unable to complete reservation." });
   }
 };
 
 module.exports = {
+  getSlotAvailability,
   createReservation,
   getMyReservations,
-  getAllReservations,
+  updateReservation,
   cancelReservation,
+  getAllReservations,
   cancelReservationByAdmin,
   restoreReservationByAdmin,
   completeReservationByAdmin,

@@ -1,4 +1,4 @@
-//Reservation.js
+// src/models/Reservation.js
 const mongoose = require("mongoose");
 
 const reservationSchema = new mongoose.Schema(
@@ -18,7 +18,20 @@ const reservationSchema = new mongoose.Schema(
     date: { type: String, required: true }, // "YYYY-MM-DD"
     timeSlot: { type: String, required: true },
 
-    guests: { type: Number, required: true },
+    guests: { type: Number, required: true, min: 1, max: 20 },
+
+    occasion: {
+      type: String,
+      enum: ["None", "Birthday", "Anniversary", "Business", "Date Night"],
+      default: "None",
+    },
+
+    specialRequests: {
+      type: String,
+      trim: true,
+      maxlength: 200,
+      default: "",
+    },
 
     status: {
       type: String,
@@ -29,8 +42,6 @@ const reservationSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ Unique booking: 1 table + 1 date + 1 timeslot cannot be duplicated
-//reservationSchema.index({ table: 1, date: 1, timeSlot: 1 }, { unique: true });
 reservationSchema.index(
   { table: 1, date: 1, timeSlot: 1 },
   {
@@ -38,8 +49,5 @@ reservationSchema.index(
     partialFilterExpression: { status: "ACTIVE" },
   }
 );
+
 module.exports = mongoose.model("Reservation", reservationSchema);
-
-
-
-
